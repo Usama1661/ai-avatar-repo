@@ -1,0 +1,72 @@
+{
+  "name": "@usamanawaz/react-native-ai-avatar",
+  "version": "1.0.0",
+  "description": "Reusable 3D AI avatar for Expo and React Native on Android, iOS, and web.",
+  "main": "index.ts",
+  "types": "./dist/index.d.ts",
+  "react-native": "./src/avatar/index.ts",
+  "source": "./src/avatar/index.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "react-native": "./src/avatar/index.ts",
+      "browser": "./src/avatar/index.ts",
+      "import": "./src/avatar/index.ts",
+      "default": "./src/avatar/index.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/avatar",
+    "assets/models",
+    "dist"
+  ],
+  "dependencies": {
+    "@react-three/fiber": "^9.8.1",
+    "expo": "~57.0.28",
+    "expo-asset": "~57.0.19",
+    "expo-file-system": "~57.0.7",
+    "expo-gl": "~57.0.2",
+    "expo-speech": "~57.0.3",
+    "expo-status-bar": "~57.0.1",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-web": "^0.21.2",
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "@types/three": "^0.186.0",
+    "typescript": "~6.0.3"
+  },
+  "peerDependencies": {
+    "@react-three/fiber": ">=9.8.1",
+    "expo": ">=57",
+    "expo-asset": ">=57",
+    "expo-file-system": ">=57",
+    "expo-gl": ">=57",
+    "expo-speech": ">=57",
+    "react": ">=19",
+    "react-dom": ">=19",
+    "react-native": ">=0.81",
+    "react-native-web": ">=0.21.0",
+    "three": ">=0.170.0"
+  },
+  "peerDependenciesMeta": {
+    "react-dom": {
+      "optional": true
+    },
+    "react-native-web": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "build:types": "tsc -p tsconfig.build.json"
+  },
+  "private": true
+}
