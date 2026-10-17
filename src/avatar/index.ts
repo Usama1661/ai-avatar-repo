@@ -14,6 +14,7 @@ export type { AIAvatarHandle, AIAvatarProps } from './AIAvatar';
 export type {
   AvatarModel,
   AvatarModelId,
+  AvatarOutfit,
   AvatarSex,
   AvatarViewProps,
   ExpressionName,

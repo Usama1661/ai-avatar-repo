@@ -48,12 +48,24 @@ export function AvatarStage({ source, animator }: AvatarStageProps) {
   return (
     <View style={styles.frame}>
       {avatar ? (
-        <Canvas style={styles.canvas} camera={{ fov: 30, near: 0.05, far: 20, position: [0, 1.5, 1.2] }}>
-          <color attach="background" args={['#e7eef6']} />
-          <ambientLight intensity={0.42} color="#f3eee8" />
-          <directionalLight position={[0.35, 2.1, 1.7]} intensity={1.55} color="#fff4ea" />
-          <directionalLight position={[-1.2, 1.3, 0.8]} intensity={0.42} color="#d5e3f6" />
-          <directionalLight position={[0.1, 1.9, -1.5]} intensity={0.7} />
+        <Canvas
+          style={styles.canvas}
+          // MSAA is unreliable on the iOS Simulator's OpenGL stack.
+          gl={{ antialias: false }}
+          camera={{ fov: 32, near: 0.01, far: 40, position: [0, 0.85, 3.2] }}
+          onCreated={({ gl }) => {
+            const context = gl.getContext();
+            console.log(
+              `avatar gl ${context.drawingBufferWidth}x${context.drawingBufferHeight}`,
+            );
+          }}
+        >
+          <color attach="background" args={['#dce6f2']} />
+          <hemisphereLight args={['#f7f1ea', '#9eb0c8', 0.7]} />
+          <ambientLight intensity={0.35} color="#f3eee8" />
+          <directionalLight position={[0.45, 2.2, 1.6]} intensity={1.65} color="#fff4ea" />
+          <directionalLight position={[-1.1, 1.4, 0.9]} intensity={0.5} color="#d5e3f6" />
+          <directionalLight position={[0.15, 1.7, -1.4]} intensity={0.55} color="#ffe8d6" />
           <AvatarModel avatar={avatar} animator={animator} />
         </Canvas>
       ) : (
@@ -71,11 +83,10 @@ function AvatarModel({ avatar, animator }: { avatar: LoadedAvatar; animator: Ava
   const framed = useRef(false);
 
   useFrame((state) => {
-    if (!framed.current) {
-      avatar.frameCamera(camera as PerspectiveCamera);
-      framed.current = true;
-    }
     applyPose(avatar, animator.sample(state.clock.elapsedTime));
+    if (!framed.current) {
+      framed.current = avatar.frameCamera(camera as PerspectiveCamera);
+    }
   });
 
   return <primitive object={avatar.scene} />;
@@ -86,8 +97,9 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 320,
     borderRadius: 16,
-    overflow: 'hidden',
-    backgroundColor: '#e7eef6',
+    // overflow:hidden on an iOS parent clips the OpenGL layer, so the view
+    // stays the background color even while the GL context is rendering.
+    backgroundColor: '#dce6f2',
   },
   canvas: {
     flex: 1,

@@ -1,11 +1,13 @@
 import { Asset } from 'expo-asset';
 import { File, Paths } from 'expo-file-system';
+import { decode as decodeJpeg } from 'jpeg-js';
 import { Platform } from 'react-native';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
+import { createCpuSkins, type CpuSkin } from './cpuSkin';
 import { MPFB_BONE_SOURCES } from './boneMap';
-import { BLENDSHAPES } from './blendshapes';
+import { extractCpuMorphs, type CpuMorphMesh } from './cpuMorphs';
 import type { BoneName } from './skeleton';
 
 export type BoundBone = {
@@ -15,9 +17,14 @@ export type BoundBone = {
 
 export type LoadedAvatar = {
   scene: THREE.Group;
+  /** Rotated for subtle head-turn without GPU skinning. */
+  lookGroup: THREE.Group;
+  /** @deprecated Prefer cpuMorphs — kept for older call sites. */
   morphMeshes: THREE.Mesh[];
-  bones: Record<BoneName, BoundBone[]>;
-  frameCamera: (camera: THREE.PerspectiveCamera) => void;
+  cpuMorphs: CpuMorphMesh[];
+  cpuSkins: CpuSkin[];
+  bones: Partial<Record<BoneName, BoundBone[]>>;
+  frameCamera: (camera: THREE.PerspectiveCamera) => boolean;
   dispose: () => void;
 };
 
@@ -55,30 +62,17 @@ export async function loadAvatar(
     20000,
     'Parsing the model',
   );
-  const scene = gltf.scene;
+  const loadedRoot = gltf.scene;
   onProgress?.('Loading textures…');
-  await withTimeout(attachMissingTextures(scene, buffer), 20000, 'Loading textures');
+  await withTimeout(attachMissingTextures(loadedRoot, buffer), 20000, 'Loading textures');
 
-  const morphMeshes: THREE.Mesh[] = [];
-  const found = new Set<string>();
-  scene.traverse((object) => {
-    const mesh = object as THREE.Mesh;
-    if (!mesh.isMesh || !mesh.morphTargetDictionary || !mesh.morphTargetInfluences) return;
-    morphMeshes.push(mesh);
-    for (const name of Object.keys(mesh.morphTargetDictionary)) found.add(name);
-  });
-
-  const missingMorphs = BLENDSHAPES.filter((name) => !found.has(name));
-  if (missingMorphs.length > 0) {
-    throw new Error(`GLB is missing ARKit morph targets: ${missingMorphs.join(', ')}`);
-  }
-
+  // Bind bones before neutralizing skinning so camera framing still works.
   const byName = new Map<string, THREE.Bone>();
-  scene.traverse((object) => {
+  loadedRoot.traverse((object) => {
     if ((object as THREE.Bone).isBone) byName.set(object.name, object as THREE.Bone);
   });
 
-  const bones = {} as Record<BoneName, BoundBone[]>;
+  const bones: Partial<Record<BoneName, BoundBone[]>> = {};
   for (const [contractName, sources] of Object.entries(MPFB_BONE_SOURCES) as [BoneName, readonly string[]][]) {
     const bound: BoundBone[] = [];
     for (const sourceName of sources) {
@@ -86,23 +80,52 @@ export async function loadAvatar(
       if (!bone || bound.some((item) => item.bone === bone)) continue;
       bound.push({ bone, rest: bone.quaternion.clone() });
     }
-    if (bound.length === 0) {
-      throw new Error(`GLB is missing a bone for ${contractName}. Looked for ${sources.join(', ')}.`);
-    }
-    bones[contractName] = bound;
+    if (bound.length > 0) bones[contractName] = bound;
   }
 
-  scene.traverse((object) => {
+  // Native Expo GL cannot draw SkinnedMesh (float bone textures). Pose on the CPU.
+  let cpuSkins: CpuSkin[] = [];
+  if (Platform.OS !== 'web') {
+    onProgress?.('Preparing mesh…');
+    cpuSkins = createCpuSkins(loadedRoot);
+    useBasicMaterials(loadedRoot);
+  }
+
+  const morphMeshes: THREE.Mesh[] = [];
+  const cpuMorphs: CpuMorphMesh[] = [];
+  loadedRoot.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.morphTargetDictionary || !mesh.morphTargetInfluences) return;
+    morphMeshes.push(mesh);
+    const cpu = extractCpuMorphs(mesh);
+    if (cpu) cpuMorphs.push(cpu);
+  });
+
+  // Use every face shape the file actually has. A partial set still drives
+  // Happy, Sad, and the other buttons; missing names stay at rest.
+  for (const morph of cpuMorphs) {
+    const skin = cpuSkins.find((item) => item.position === morph.position);
+    if (skin) morph.morphOut = skin.morph;
+  }
+
+  loadedRoot.traverse((object) => {
     const mesh = object as THREE.Mesh;
     if (mesh.isMesh) mesh.frustumCulled = false;
   });
 
+  const lookGroup = new THREE.Group();
+  lookGroup.name = 'AvatarLook';
+  lookGroup.add(loadedRoot);
+
   return {
-    scene,
+    scene: lookGroup,
+    lookGroup,
     morphMeshes,
+    cpuMorphs,
+    cpuSkins,
     bones,
-    frameCamera: (camera) => frameOnFace(bones, camera),
-    dispose: () => disposeScene(scene),
+    frameCamera: (camera) => framePortrait(loadedRoot, camera),
+    dispose: () => disposeScene(lookGroup),
   };
 }
 
@@ -263,6 +286,7 @@ function readGlb(buffer: ArrayBuffer): { json: GlbJson; bin: Uint8Array } {
 }
 
 async function textureFromBytes(name: string, bytes: Uint8Array, mime: string): Promise<THREE.Texture> {
+  if (mime.includes('jpeg') || mime.includes('jpg')) return textureFromJpeg(bytes);
   if (Platform.OS === 'web') {
     const blob = new Blob([Uint8Array.from(bytes)], { type: mime });
     const url = URL.createObjectURL(blob);
@@ -280,13 +304,40 @@ async function textureFromBytes(name: string, bytes: Uint8Array, mime: string): 
   file.create({ overwrite: true, intermediates: true });
   file.write(bytes);
   const { width, height } = imageSize(bytes);
+  // Expo GL uploads via texImage2D(..., { localUri }). Three only takes that
+  // path when isDataTexture is set so image.data is passed as the pixels arg.
   const texture = new THREE.Texture();
-  texture.image = { data: { localUri: file.uri }, width, height };
-  texture.flipY = true;
+  texture.image = { data: { localUri: fixFileUri(file.uri) }, width, height };
+  texture.flipY = false;
   texture.colorSpace = THREE.SRGBColorSpace;
+  texture.generateMipmaps = false;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
   texture.needsUpdate = true;
   (texture as THREE.Texture & { isDataTexture?: boolean }).isDataTexture = true;
   return texture;
+}
+
+function textureFromJpeg(bytes: Uint8Array): THREE.DataTexture {
+  const decoded = decodeJpeg(Uint8Array.from(bytes), { useTArray: true, formatAsRGBA: true });
+  const texture = new THREE.DataTexture(decoded.data, decoded.width, decoded.height, THREE.RGBAFormat);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.flipY = false;
+  texture.generateMipmaps = false;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+/** Expo GL expects `file://`, but some File APIs emit `file:/`. */
+function fixFileUri(uri: string): string {
+  if (uri.startsWith('file:') && !uri.startsWith('file://')) {
+    return `file://${uri.slice('file:'.length)}`;
+  }
+  return uri;
 }
 
 function imageSize(bytes: Uint8Array): { width: number; height: number } {
@@ -298,24 +349,110 @@ function imageSize(bytes: Uint8Array): { width: number; height: number } {
 
 function tuneMaterial(material: THREE.MeshStandardMaterial) {
   const name = material.name.toLowerCase();
+  material.envMapIntensity = 0.85;
   if (name.includes('hair') || name.includes('eyebrow')) {
     material.transparent = true;
     material.depthWrite = false;
     material.side = THREE.DoubleSide;
     material.alphaTest = 0.05;
+    material.roughness = Math.min(material.roughness ?? 1, 0.72);
   } else if (name.includes('eye')) {
     material.transparent = true;
     material.depthWrite = true;
     material.side = THREE.DoubleSide;
+    material.roughness = 0.18;
+    material.metalness = 0.02;
+  } else if (name.includes('cloth') || name.includes('shirt') || name.includes('top')) {
+    material.transparent = false;
+    material.depthWrite = true;
+    material.side = THREE.DoubleSide;
+    material.roughness = 0.78;
+    material.metalness = 0.02;
   } else {
+    // Skin reads more alive with a little warm albedo bias and soft specular.
     material.transparent = false;
     material.depthWrite = true;
     material.side = THREE.FrontSide;
+    material.roughness = Math.min(material.roughness ?? 1, 0.55);
+    material.metalness = 0.02;
+    if (!material.map) material.color.set('#e8c4a8');
   }
 }
 
 function isStandard(material: THREE.Material): material is THREE.MeshStandardMaterial {
   return 'map' in material;
+}
+
+function useBasicMaterials(scene: THREE.Object3D) {
+  scene.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    const basic = materials.map((material) => {
+      if (!(material instanceof THREE.MeshStandardMaterial) && !(material instanceof THREE.MeshPhysicalMaterial)) {
+        material.side = THREE.DoubleSide;
+        return material;
+      }
+      const next = new THREE.MeshBasicMaterial({
+        name: material.name,
+        map: material.map,
+        color: material.map ? new THREE.Color('#ffffff') : fallbackColor(material),
+        side: THREE.DoubleSide,
+        depthWrite: true,
+      });
+      return next;
+    });
+    mesh.material = Array.isArray(mesh.material) ? basic : basic[0];
+  });
+}
+
+function fallbackColor(material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial): THREE.Color {
+  const name = material.name.toLowerCase();
+  if (name.includes('hair')) return new THREE.Color('#2c2118');
+  if (name.includes('eyebrow')) return new THREE.Color('#241810');
+  if (name.includes('eye')) return new THREE.Color('#6e4b32');
+  if (name.includes('cloth') || name.includes('suit') || name.includes('shirt')) return material.color.clone();
+  if (material.color && material.map === null && material.color.getHex() !== 0xffffff) return material.color.clone();
+  return new THREE.Color('#d7a07a');
+}
+
+function framePortrait(root: THREE.Object3D, camera: THREE.PerspectiveCamera): boolean {
+  let headBone: THREE.Bone | null = null;
+  root.traverse((object) => {
+    const bone = object as THREE.Bone;
+    if (!headBone && bone.isBone && bone.name.toLowerCase() === 'head') headBone = bone;
+  });
+  if (!headBone) return frameFaceAndChest(root, camera);
+
+  const neck = headBone as THREE.Bone;
+  neck.updateWorldMatrix(true, false);
+  const head = new THREE.Vector3();
+  neck.getWorldPosition(head);
+  const lookY = head.y + 0.08;
+  camera.position.set(head.x, lookY, head.z + 0.82);
+  camera.near = 0.04;
+  camera.far = 20;
+  camera.fov = 26;
+  camera.lookAt(head.x, lookY + 0.02, head.z);
+  camera.updateProjectionMatrix();
+  return true;
+}
+
+/** Face plus a short strip of chest, for a mesh that has no head bone. */
+function frameFaceAndChest(root: THREE.Object3D, camera: THREE.PerspectiveCamera): boolean {
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root);
+  const size = box.getSize(new THREE.Vector3());
+  if (size.y < 1e-4) return false;
+  const centerX = (box.min.x + box.max.x) * 0.5;
+  const lookY = box.max.y - Math.min(0.2, size.y * 0.12);
+  camera.position.set(centerX, lookY, box.max.z + 0.82);
+  camera.near = 0.04;
+  camera.far = 20;
+  camera.fov = 26;
+  camera.lookAt(centerX, lookY + 0.04, box.max.z);
+  camera.updateProjectionMatrix();
+  return true;
 }
 
 function frameOnFace(bones: Record<BoneName, BoundBone[]>, camera: THREE.PerspectiveCamera) {
@@ -329,15 +466,18 @@ function frameOnFace(bones: Record<BoneName, BoundBone[]>, camera: THREE.Perspec
   bones.LeftEye[0].bone.getWorldPosition(left);
   bones.RightEye[0].bone.getWorldPosition(right);
   const eyes = left.clone().add(right).multiplyScalar(0.5);
-  const forward = eyes.clone().sub(head);
-  forward.y = 0;
-  if (forward.lengthSq() < 1e-6) forward.set(0, 0, 1);
-  forward.normalize();
-  camera.position.copy(eyes).addScaledVector(forward, 0.78);
-  camera.position.y = eyes.y + 0.03;
+  // Prefer the face forward (+Z for this MPFB export). Fall back to eye−head.
+  let forward = new THREE.Vector3(0, 0, 1);
+  const fromBones = eyes.clone().sub(head);
+  fromBones.y = 0;
+  if (fromBones.lengthSq() > 1e-6) forward = fromBones.normalize();
+  camera.position.copy(eyes).addScaledVector(forward, 0.72);
+  camera.position.y = eyes.y + 0.02;
   camera.near = 0.05;
   camera.far = 20;
-  camera.lookAt(eyes.x, eyes.y - 0.06, eyes.z);
+  camera.fov = 28;
+  // Aim slightly below the eyes so the whole face (and shirt collar) reads.
+  camera.lookAt(eyes.x, eyes.y - 0.04, eyes.z);
   camera.updateProjectionMatrix();
 }
 

@@ -5,11 +5,13 @@ import { AvatarAnimator } from './animation/animator';
 import { avatarModelSource } from './model/catalog';
 import { AvatarStage } from './rendering/AvatarStage';
 import { createExpoSpeechProvider } from './speech/ExpoSpeechProvider';
-import type { AvatarModelId, ExpressionName } from './types';
+import type { AvatarModelId, AvatarOutfit, ExpressionName } from './types';
 import type { VoiceProvider } from './voice/types';
 
 export type AIAvatarProps = {
   model?: AvatarModelId;
+  /** `casual` wears the black crew-neck. Omit it to keep the default male model. */
+  outfit?: AvatarOutfit;
   enableBlinking?: boolean;
   enableHeadMovement?: boolean;
   enableEyeMovement?: boolean;
@@ -27,6 +29,7 @@ export type AIAvatarHandle = {
 export const AIAvatar = forwardRef<AIAvatarHandle, AIAvatarProps>(function AIAvatar(
   {
     model = 'male',
+    outfit,
     enableBlinking = true,
     enableHeadMovement = true,
     enableEyeMovement = true,
@@ -69,7 +72,13 @@ export const AIAvatar = forwardRef<AIAvatarHandle, AIAvatarProps>(function AIAva
         if (run !== runRef.current) return;
         animator.beginSpeech(spoken);
         try {
-          await voiceRef.current.speak({ text: spoken });
+          await voiceRef.current.speak({
+            text: spoken,
+            onBoundary: ({ charIndex, charLength }) => {
+              if (run !== runRef.current) return;
+              animator.setSpeechBoundary(charIndex, charLength);
+            },
+          });
         } finally {
           if (run === runRef.current) animator.endSpeech();
         }
@@ -83,7 +92,7 @@ export const AIAvatar = forwardRef<AIAvatarHandle, AIAvatarProps>(function AIAva
     [animator],
   );
 
-  const source = avatarModelSource(model);
+  const source = avatarModelSource(model, outfit);
   if (source === null) {
     return (
       <View style={[styles.missing, style]}>

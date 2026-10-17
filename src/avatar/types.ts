@@ -3,6 +3,9 @@ export type AvatarSex = 'female' | 'male';
 /** Which bundled GLB to show. Female is reserved until that model is exported. */
 export type AvatarModelId = AvatarSex;
 
+/** Clothes bundled with the male human. `casual` is the black crew-neck. */
+export type AvatarOutfit = 'casual';
+
 export type ExpressionName =
   | 'neutral'
   | 'happy'
@@ -29,6 +32,8 @@ export type AvatarModel = {
 export type SpeakRequest = {
   text: string;
   voiceId?: string;
+  /** Fired when TTS reaches a word (iOS/Android). Used to lock lip-sync. */
+  onBoundary?: (event: { charIndex: number; charLength: number }) => void;
 };
 
 export type AvatarViewProps = {

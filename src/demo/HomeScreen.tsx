@@ -64,7 +64,12 @@ export function HomeScreen() {
         enableEyeMovement
         expression={expression}
       />
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.expressions}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.expressionBar}
+        contentContainerStyle={styles.expressions}
+      >
         {EXPRESSIONS.map((name) => (
           <Pressable
             key={name}
@@ -114,17 +119,23 @@ const styles = StyleSheet.create({
     paddingTop: 64,
     gap: 12,
   },
+  expressionBar: {
+    flexGrow: 0,
+    height: 32,
+  },
   expressions: {
     gap: 8,
-    paddingVertical: 2,
+    alignItems: 'center',
   },
   chip: {
+    height: 28,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: '#c5d0de',
     backgroundColor: '#ffffff',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   chipSelected: {
     backgroundColor: '#243044',
@@ -161,7 +172,7 @@ const styles = StyleSheet.create({
   },
   button: {
     flex: 1,
-    minHeight: 48,
+    minHeight: 36,
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
